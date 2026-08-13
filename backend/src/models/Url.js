@@ -5,28 +5,37 @@ const urlSchema = new mongoose.Schema(
     user: {
       type: mongoose.Schema.Types.ObjectId,
       ref: "User",
-      required: true
+      required: true,
+      index: true
     },
 
     url: {
       type: String,
       required: true,
-      trim: true
+      trim: true,
+      maxlength: 2048
     },
 
     name: {
       type: String,
-      default: ""
+      default: "",
+      trim: true,
+      maxlength: 100
     },
 
     enabled: {
       type: Boolean,
-      default: true
+      default: true,
+      index: true
     },
 
     lastStatus: {
       type: String,
-      enum: ["unknown", "healthy", "failed"],
+      enum: [
+        "unknown",
+        "healthy",
+        "failed"
+      ],
       default: "unknown"
     },
 
@@ -42,7 +51,8 @@ const urlSchema = new mongoose.Schema(
 
     lastError: {
       type: String,
-      default: null
+      default: null,
+      maxlength: 1000
     }
   },
   {
@@ -51,10 +61,18 @@ const urlSchema = new mongoose.Schema(
 );
 
 urlSchema.index(
-  { user: 1, url: 1 },
-  { unique: true }
+  {
+    user: 1,
+    url: 1
+  },
+  {
+    unique: true
+  }
 );
 
-const Url = mongoose.model("Url", urlSchema);
+const Url = mongoose.model(
+  "Url",
+  urlSchema
+);
 
 export default Url;

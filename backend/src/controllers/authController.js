@@ -4,9 +4,15 @@ import jwt from "jsonwebtoken";
 import User from "../models/User.js";
 
 const generateToken = (userId) => {
+  if (!process.env.JWT_SECRET) {
+    throw new Error(
+      "JWT_SECRET is not configured"
+    );
+  }
+
   return jwt.sign(
     {
-      id: userId
+      id: userId.toString()
     },
     process.env.JWT_SECRET,
     {
@@ -15,24 +21,61 @@ const generateToken = (userId) => {
   );
 };
 
-const register = async (req, res) => {
+const normalizeEmail = (email) => {
+  if (
+    typeof email !== "string"
+  ) {
+    return "";
+  }
+
+  return email
+    .trim()
+    .toLowerCase();
+};
+
+const register = async (
+  req,
+  res
+) => {
   try {
-    const { email, password } = req.body;
+    const email =
+      normalizeEmail(
+        req.body?.email
+      );
+
+    const password =
+      typeof req.body?.password ===
+      "string"
+        ? req.body.password
+        : "";
 
     if (!email || !password) {
       return res.status(400).json({
         success: false,
-        message: "Email and password are required"
+        message:
+          "Email and password are required"
       });
     }
 
-    const normalizedEmail = email
-      .toLowerCase()
-      .trim();
+    if (password.length < 6) {
+      return res.status(400).json({
+        success: false,
+        message:
+          "Password must be at least 6 characters"
+      });
+    }
 
-    const existingUser = await User.findOne({
-      email: normalizedEmail
-    });
+    if (email.length > 254) {
+      return res.status(400).json({
+        success: false,
+        message: "Invalid email address"
+      });
+    }
+
+    const existingUser =
+      await User.findOne({
+        email
+      }).lean();
 
     if (existingUser) {
       return res.status(409).json({
@@ -41,26 +84,44 @@ const register = async (req, res) => {
       });
     }
 
-    const hashedPassword = await bcrypt.hash(
-      password,
-      12
-    );
+    const hashedPassword =
+      await bcrypt.hash(
+        password,
+        12
+      );
 
-    const user = await User.create({
-      email: normalizedEmail,
-      password: hashedPassword
-    });
+    const user =
+      await User.create({
+        email,
+        password: hashedPassword
+      });
 
     return res.status(201).json({
       success: true,
-      token: generateToken(user._id),
+
+      token: generateToken(
+        user._id
+      ),
+
       user: {
         id: user._id,
         email: user.email
       }
     });
   } catch (error) {
-    console.error(error);
+    console.error(
+      "[Auth] Registration error:",
+      error
+    );
+
+    if (
+      error?.code === 11000
+    ) {
+      return res.status(409).json({
+        success: false,
+        message: "User already exists"
+      });
+    }
 
     return res.status(500).json({
       success: false,
@@ -69,37 +130,74 @@ const register = async (req, res) => {
   }
 };
 
-const login = async (req, res) => {
+const login = async (
+  req,
+  res
+) => {
   try {
-    const { email, password } = req.body;
+    const email =
+      normalizeEmail(
+        req.body?.email
+      );
 
-    const user = await User.findOne({
-      email: email?.toLowerCase().trim()
-    });
+    const password =
+      typeof req.body?.password ===
+      "string"
+        ? req.body.password
+        : "";
 
-    if (
-      !user ||
-      !(await bcrypt.compare(
-        password || "",
-        user.password
-      ))
-    ) {
+    if (!email || !password) {
+      return res.status(400).json({
+        success: false,
+        message:
+          "Email and password are required"
+      });
+    }
+
+    const user =
+      await User.findOne({
+        email
+      });
+
+    if (!user) {
       return res.status(401).json({
         success: false,
-        message: "Invalid email or password"
+        message:
+          "Invalid email or password"
+      });
+    }
+
+    const passwordMatches =
+      await bcrypt.compare(
+        password,
+        user.password
+      );
+
+    if (!passwordMatches) {
+      return res.status(401).json({
+        success: false,
+        message:
+          "Invalid email or password"
       });
     }
 
     return res.json({
       success: true,
-      token: generateToken(user._id),
+
+      token: generateToken(
+        user._id
+      ),
+
       user: {
         id: user._id,
         email: user.email
       }
     });
   } catch (error) {
-    console.error(error);
+    console.error(
+      "[Auth] Login error:",
+      error
+    );
 
     return res.status(500).json({
       success: false,

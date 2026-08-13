@@ -1,78 +1,202 @@
-const API_URL = import.meta.env.VITE_API_URL;
+const API_URL =
+  import.meta.env.VITE_API_URL?.trim();
 
-if (!API_URL) {
-  console.error(
-    "[api] VITE_API_URL is not set. " +
-    "Create frontend/.env with VITE_API_URL=http://localhost:5000"
-  );
-}
-
-const request = async (endpoint, options = {}) => {
-  const response = await fetch(`${API_URL}${endpoint}`, {
-    ...options,
-    headers: {
-      "Content-Type": "application/json",
-      ...(options.headers || {})
-    }
-  });
-
-  const data = await response.json();
-
-  if (!response.ok) {
-    const err = new Error(data.message || "Request failed");
-    err.status = response.status;
-
-    if (response.status === 401) {
-      // Clear stale credentials so the next render shows the login screen
-      localStorage.removeItem("keepalive_token");
-      localStorage.removeItem("keepalive_user");
-    }
-
-    throw err;
+const getApiUrl = (
+  endpoint
+) => {
+  if (!API_URL) {
+    throw new Error(
+      "VITE_API_URL is not configured."
+    );
   }
 
-  return data;
+  return `${API_URL.replace(
+    /\/+$/,
+    ""
+  )}/${endpoint.replace(
+    /^\/+/,
+    ""
+  )}`;
 };
 
-const authHeaders = () => {
-  const token = localStorage.getItem("keepalive_token");
+const parseResponse =
+  async (response) => {
+    const contentType =
+      response.headers.get(
+        "content-type"
+      ) || "";
 
-  return token ? { Authorization: `Bearer ${token}` } : {};
-};
+    if (
+      contentType.includes(
+        "application/json"
+      )
+    ) {
+      try {
+        return await response.json();
+      } catch {
+        return {};
+      }
+    }
 
-export const register = (email, password) =>
-  request("/api/auth/register", {
-    method: "POST",
-    body: JSON.stringify({ email, password })
-  });
+    const text =
+      await response.text();
 
-export const login = (email, password) =>
-  request("/api/auth/login", {
-    method: "POST",
-    body: JSON.stringify({ email, password })
-  });
+    return {
+      message:
+        text ||
+        `Request failed with status ${response.status}`
+    };
+  };
 
-export const getUrls = () =>
-  request("/api/urls", {
-    headers: authHeaders()
-  });
+const request =
+  async (
+    endpoint,
+    options = {}
+  ) => {
+    let response;
 
-export const createUrl = (url, name) =>
-  request("/api/urls", {
-    method: "POST",
-    headers: authHeaders(),
-    body: JSON.stringify({ url, name })
-  });
+    try {
+      response =
+        await fetch(
+          getApiUrl(endpoint),
+          {
+            ...options,
+            headers: {
+              "Content-Type":
+                "application/json",
+              ...(options.headers ||
+                {})
+            }
+          }
+        );
+    } catch (error) {
+      const networkError =
+        new Error(
+          "Unable to connect to the server."
+        );
 
-export const updateUrl = (id, data) =>
-  request(`/api/urls/${id}`, {
-    method: "PATCH",
-    headers: authHeaders(),
-    body: JSON.stringify(data)
-  });
+      networkError.cause =
+        error;
 
-export const deleteUrl = (id) =>
-  request(`/api/urls/${id}`, {
-    method: "DELETE",
-    headers: authHeaders()
-  });
+      throw networkError;
+    }
+
+    const data =
+      await parseResponse(
+        response
+      );
+
+    if (!response.ok) {
+      const error =
+        new Error(
+          data?.message ||
+            `Request failed with status ${response.status}`
+        );
+
+      error.status =
+        response.status;
+
+      throw error;
+    }
+
+    return data;
+  };
+
+const authHeaders =
+  () => {
+    const token =
+      localStorage.getItem(
+        "keepalive_token"
+      );
+
+    return token
+      ? {
+          Authorization: `Bearer ${token}`
+        }
+      : {};
+  };
+
+export const register = (
+  email,
+  password
+) =>
+  request(
+    "/api/auth/register",
+    {
+      method: "POST",
+      body: JSON.stringify({
+        email,
+        password
+      })
+    }
+  );
+
+export const login = (
+  email,
+  password
+) =>
+  request(
+    "/api/auth/login",
+    {
+      method: "POST",
+      body: JSON.stringify({
+        email,
+        password
+      })
+    }
+  );
+
+export const getUrls =
+  () =>
+    request(
+      "/api/urls",
+      {
+        headers:
+          authHeaders()
+      }
+    );
+
+export const createUrl = (
+  url,
+  name
+) =>
+  request(
+    "/api/urls",
+    {
+      method: "POST",
+      headers:
+        authHeaders(),
+      body: JSON.stringify({
+        url,
+        name
+      })
+    }
+  );
+
+export const updateUrl = (
+  id,
+  data
+) =>
+  request(
+    `/api/urls/${id}`,
+    {
+      method: "PATCH",
+      headers:
+        authHeaders(),
+      body: JSON.stringify(
+        data
+      )
+    }
+  );
+
+export const deleteUrl = (
+  id
+) =>
+  request(
+    `/api/urls/${id}`,
+    {
+      method: "DELETE",
+      headers:
+        authHeaders()
+    }
+  );

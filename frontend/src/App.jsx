@@ -1,46 +1,135 @@
-import { useState } from "react";
+import {
+  useCallback,
+  useState
+} from "react";
+
 import Login from "./components/Login.jsx";
 import Dashboard from "./components/Dashboard.jsx";
 
-function App() {
-  const [auth, setAuth] = useState(() => {
-    // Hydrate from localStorage on first render
-    const token = localStorage.getItem("keepalive_token");
-    const raw = localStorage.getItem("keepalive_user");
+const TOKEN_KEY =
+  "keepalive_token";
 
-    if (!token || !raw) return null;
+const USER_KEY =
+  "keepalive_user";
 
-    try {
-      return { token, user: JSON.parse(raw) };
-    } catch {
-      // Corrupted storage — start fresh
-      localStorage.removeItem("keepalive_token");
-      localStorage.removeItem("keepalive_user");
+const loadAuth =
+  () => {
+    const token =
+      localStorage.getItem(
+        TOKEN_KEY
+      );
+
+    const rawUser =
+      localStorage.getItem(
+        USER_KEY
+      );
+
+    if (!token || !rawUser) {
       return null;
     }
-  });
 
-  const handleLogin = (user, token) => {
-    localStorage.setItem("keepalive_token", token);
-    localStorage.setItem("keepalive_user", JSON.stringify(user));
-    setAuth({ user, token });
+    try {
+      const user =
+        JSON.parse(rawUser);
+
+      if (
+        !user ||
+        typeof user !==
+          "object" ||
+        !user.id ||
+        !user.email
+      ) {
+        throw new Error(
+          "Invalid stored user"
+        );
+      }
+
+      return {
+        token,
+        user
+      };
+    } catch {
+      localStorage.removeItem(
+        TOKEN_KEY
+      );
+
+      localStorage.removeItem(
+        USER_KEY
+      );
+
+      return null;
+    }
   };
 
-  const clearSession = () => {
-    localStorage.removeItem("keepalive_token");
-    localStorage.removeItem("keepalive_user");
-    setAuth(null);
-  };
+function App() {
+  const [auth, setAuth] =
+    useState(loadAuth);
+
+  const handleLogin =
+    useCallback(
+      (user, token) => {
+        if (
+          !user?.id ||
+          !user?.email ||
+          !token
+        ) {
+          console.error(
+            "[Auth] Invalid login response."
+          );
+
+          return;
+        }
+
+        localStorage.setItem(
+          TOKEN_KEY,
+          token
+        );
+
+        localStorage.setItem(
+          USER_KEY,
+          JSON.stringify(user)
+        );
+
+        setAuth({
+          token,
+          user
+        });
+      },
+      []
+    );
+
+  const handleLogout =
+    useCallback(() => {
+      localStorage.removeItem(
+        TOKEN_KEY
+      );
+
+      localStorage.removeItem(
+        USER_KEY
+      );
+
+      setAuth(null);
+    }, []);
 
   if (!auth) {
-    return <Login onLogin={handleLogin} />;
+    return (
+      <Login
+        onLogin={
+          handleLogin
+        }
+      />
+    );
   }
 
   return (
     <Dashboard
       user={auth.user}
-      onLogout={clearSession}
-      onUnauthorized={clearSession} // Called on 401 — sends user back to Login
+      onLogout={
+        handleLogout
+      }
+      onUnauthorized={
+        handleLogout
+      }
     />
   );
 }

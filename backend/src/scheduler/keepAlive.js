@@ -1,116 +1,243 @@
-import cron from "node-cron";
 import Url from "../models/Url.js";
 
-const TIMEOUT_MS = 70_000;        // 70-second per-request timeout
-const INTERVAL_MIN = 12;          // Render free tier sleeps after 15 min of inactivity
+import {
+  pingUrlById
+} from "../services/urlPingService.js";
 
-let cycleRunning = false;
+const INTERVAL_MINUTES = Number(
+  process.env.PING_INTERVAL_MINUTES || 12
+);
 
-/**
- * Ping a single URL document and write the result straight to MongoDB.
- * No HTTP round-trip to internal endpoints — same process, same DB connection.
- */
-async function pingOne(urlDoc) {
-  const controller = new AbortController();
-  const timer = setTimeout(() => controller.abort(), TIMEOUT_MS);
+const MAX_CONCURRENT_PINGS = Number(
+  process.env.MAX_CONCURRENT_PINGS || 5
+);
 
-  try {
-    const res = await fetch(urlDoc.url, {
-      method: "GET",
-      signal: controller.signal,
-      redirect: "follow",
-      headers: { 
-        "User-Agent": "RenderKeepAlive/1.0" 
-      },
-    });
+const INTERVAL_MS =
+  INTERVAL_MINUTES *
+  60 *
+  1000;
 
-    urlDoc.lastStatus = res.ok ? "healthy" : "failed";
-    urlDoc.lastStatusCode = res.status;
-    urlDoc.lastError = res.ok
-      ? null
-      : `HTTP ${res.status} ${res.statusText}`.trim();
+let schedulerStarted = false;
+let stopping = false;
 
-    console.log(
-      `[KeepAlive] ${res.ok ? "✓" : "✗"} ${urlDoc.url} → ${res.status}`
-    );
-  } catch (err) {
-    urlDoc.lastStatus = "failed"; 
-    urlDoc.lastStatusCode = null;
+const now = () =>
+  new Date().toISOString();
 
-    urlDoc.lastError =
-      err.name === "AbortError" 
-        ? `Timed out after ${TIMEOUT_MS / 1000}s` 
-        : err.message;
-        
-    console.error(`[KeepAlive] ✗  ${urlDoc.url}  →  ${urlDoc.lastError}`);
-  } finally {
-    // Always clear the abort timer, and always persist the result.
-    clearTimeout(timer);
+const sleep = async (
+  milliseconds
+) => {
+  await new Promise(
+    (resolve) =>
+      setTimeout(
+        resolve,
+        milliseconds
+      )
+  );
+};
 
-    urlDoc.lastPingAt = new Date();
-
-    try {
-      await urlDoc.save();
-    } catch (err) {
-      console.error(
-        `[KeepAlive] DB save failed for ${urlDoc.url}:`,
-        err.message
+const runWithConcurrencyLimit =
+  async (
+    items,
+    worker,
+    limit
+  ) => {
+    const results =
+      new Array(
+        items.length
       );
-    }
-  }
-}
 
-/**
- * One full scheduler cycle: load all enabled URLs and ping them concurrently.
- * Promise.allSettled ensures one failure does not abort the others.
- */
-async function runCycle() {
-  // Re-entrancy guard — skip this tick if the previous cycle is still running.
-  if (cycleRunning) {
-    console.warn("[KeepAlive] Previous cycle still running — skipping tick.");
-    return;
-  }
+    let nextIndex = 0;
 
-  cycleRunning = true;
+    const workerLoop =
+      async () => {
+        while (
+          !stopping
+        ) {
+          const index =
+            nextIndex++;
 
-  try {
-    const urls = await Url.find({ enabled: true });
+          if (
+            index >=
+            items.length
+          ) {
+            return;
+          }
 
-    if (!urls.length) {
-      console.log("[KeepAlive] No enabled URLs to ping.");
+          try {
+            results[index] =
+              await worker(
+                items[index]
+              );
+          } catch (error) {
+            results[index] =
+              error;
+          }
+        }
+      };
+
+    const workerCount =
+      Math.min(
+        Math.max(
+          1,
+          limit
+        ),
+        items.length
+      );
+
+    await Promise.all(
+      Array.from(
+        {
+          length:
+            workerCount
+        },
+        () =>
+          workerLoop()
+      )
+    );
+
+    return results;
+  };
+
+const runCycle =
+  async () => {
+    if (stopping) {
       return;
     }
 
-    console.log(`[KeepAlive] Pinging ${urls.length} URL(s)…`);
+    const cycleStartedAt =
+      Date.now();
 
-    await Promise.allSettled(urls.map(pingOne));
-
-    console.log("[KeepAlive] Cycle complete.");
-  } catch (err) {
-    console.error("[KeepAlive] Cycle error:", err.message);
-  } finally {
-    // Always release the guard so the next tick can run.
-    cycleRunning = false;
-  }
-}
-
-/**
- * Register the cron schedule.  Called once from server.js after DB connects.
- */
-export function startScheduler() {
-  // Immediate first cycle — don't wait for the first cron tick
-  runCycle().catch((err) =>
-    console.error("[KeepAlive] Initial cycle error:", err)
-  );
-
-  // Recurring schedule
-  cron.schedule(`*/${INTERVAL_MIN} * * * *`, () => {
-    runCycle().catch((err) =>
-      console.error("[KeepAlive] Unhandled cycle error:", err)
+    console.log(
+      `\n[KeepAlive] [${now()}] ===== CYCLE START =====`
     );
-  });
 
-  console.log(
-    `[KeepAlive] Scheduler started — immediate first ping, then every ${INTERVAL_MIN} min.`
-  );
-}
+    try {
+      const urls =
+        await Url.find({
+          enabled: true
+        })
+          .select("_id url")
+          .lean();
+
+      if (
+        !urls.length
+      ) {
+        console.log(
+          `[KeepAlive] [${now()}] No enabled URLs.`
+        );
+
+        return;
+      }
+
+      console.log(
+        `[KeepAlive] [${now()}] Starting cycle for ${urls.length} URL(s) | max concurrency=${MAX_CONCURRENT_PINGS}`
+      );
+
+      await runWithConcurrencyLimit(
+        urls,
+        (url) =>
+          pingUrlById(
+            url._id
+          ),
+        MAX_CONCURRENT_PINGS
+      );
+
+      console.log(
+        `[KeepAlive] [${now()}] ===== CYCLE COMPLETE ===== | totalTime=${
+          Date.now() -
+          cycleStartedAt
+        }ms`
+      );
+    } catch (error) {
+      console.error(
+        `[KeepAlive] [${now()}] Cycle error after ${
+          Date.now() -
+          cycleStartedAt
+        }ms:`,
+        error
+      );
+    }
+  };
+
+const schedulerLoop =
+  async () => {
+    /*
+     * Run immediately after the server starts.
+     */
+    await runCycle();
+
+    /*
+     * After the initial cycle completes,
+     * wait the configured interval.
+     *
+     * This is intentionally interval-based rather
+     * than wall-clock cron based. It prevents:
+     *
+     * startup at 10:11
+     * immediate cycle
+     * cron at 10:12
+     * second cycle one minute later
+     */
+    while (
+      !stopping
+    ) {
+      console.log(
+        `[KeepAlive] [${now()}] Next cycle in ${INTERVAL_MINUTES} minutes.`
+      );
+
+      await sleep(
+        INTERVAL_MS
+      );
+
+      if (
+        stopping
+      ) {
+        break;
+      }
+
+      await runCycle();
+    }
+  };
+
+export const startScheduler =
+  () => {
+    if (
+      schedulerStarted
+    ) {
+      console.warn(
+        `[KeepAlive] [${now()}] Scheduler already started.`
+      );
+
+      return;
+    }
+
+    schedulerStarted =
+      true;
+
+    stopping = false;
+
+    console.log(
+      `[KeepAlive] [${now()}] Scheduler started | interval=${INTERVAL_MINUTES} minutes | ping timeout=${process.env.PING_TIMEOUT_MS || 70000}ms`
+    );
+
+    void schedulerLoop().catch(
+      (error) => {
+        console.error(
+          `[KeepAlive] [${now()}] Scheduler crashed:`,
+          error
+        );
+
+        schedulerStarted =
+          false;
+      }
+    );
+  };
+
+export const stopScheduler =
+  () => {
+    stopping = true;
+
+    console.log(
+      `[KeepAlive] [${now()}] Scheduler stopping...`
+    );
+  };
