@@ -36,10 +36,8 @@ const SINGLE_REQUEST_TIMEOUT_MS = Number(
 const RETRY_DELAYS_MS = [
   5000,
   10000,
-  10000,
-  10000,
-  10000,
-  10000
+  20000,
+  30000
 ];
 
 const MAX_REDIRECTS = 5;
