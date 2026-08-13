@@ -1,5 +1,22 @@
+# Dependencies
 node_modules/
+
+# Environment
 .env
-.env.local
+.env.local.
+.env.*.local
+
+# Logs
+logs/
+*.log
 npm-debug.log*
+
+# Build / dist
+dist/
+build/
+
+# Test artefacts
+coverage/
+
+# OS
 .DS_Store
