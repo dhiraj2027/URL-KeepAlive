@@ -1,7 +1,7 @@
 import cron from "node-cron";
 import Url from "../models/Url.js";
 
-const TIMEOUT_MS = 15_000;        // 15-second per-request timeout
+const TIMEOUT_MS = 70_000;        // 70-second per-request timeout
 const INTERVAL_MIN = 12;          // Render free tier sleeps after 15 min of inactivity
 
 let cycleRunning = false;
@@ -83,18 +83,7 @@ async function runCycle() {
 
     console.log(`[KeepAlive] Pinging ${urls.length} URL(s)…`);
 
-    const results = await Promise.allSettled(
-      urls.map((url) => pingOne(url))
-    );
-
-    results.forEach((result, index) => {
-      if (result.status === "rejected") {
-        console.error(
-          `[KeepAlive] Unexpected error for ${urls[index].url}:`,
-          result.reason
-        );
-      }
-    });
+    await Promise.allSettled(urls.map(pingOne));
 
     console.log("[KeepAlive] Cycle complete.");
   } catch (err) {
